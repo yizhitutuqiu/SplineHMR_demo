@@ -1,0 +1,7 @@
+# MVP demo intentionally avoids FastAPI/uvicorn.
+# It uses Python's standard-library HTTP server plus the existing splinehmr env.
+numpy
+opencv-python
+torch
+PyYAML
+

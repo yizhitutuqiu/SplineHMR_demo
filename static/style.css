@@ -1,0 +1,394 @@
+:root {
+  --bg: #f4f1eb;
+  --panel: #fffaf1;
+  --ink: #181614;
+  --muted: #6d665d;
+  --line: #ded5c8;
+  --accent: #c84d32;
+  --blue: #2f80ed;
+  --yellow: #f2c94c;
+  --green: #27ae60;
+}
+
+* { box-sizing: border-box; }
+
+html,
+body {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  background: var(--bg);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.app {
+  width: min(calc(100vw - 32px), 1280px);
+  margin: 0 auto;
+  padding: 24px 0 32px;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: flex-start;
+  margin-bottom: 18px;
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(2rem, 4vw, 3.2rem);
+  line-height: 1.05;
+}
+
+h2 {
+  margin: 0 0 10px;
+  font-size: 1rem;
+}
+
+p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.badge {
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.controls,
+.viewer-card,
+.side-card {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--panel);
+  box-shadow: 0 14px 40px rgba(44, 33, 20, 0.08);
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.3fr) minmax(220px, 1.35fr) minmax(110px, 0.8fr) minmax(110px, 0.8fr) auto auto;
+  gap: 12px;
+  align-items: end;
+  padding: 14px;
+  margin-bottom: 16px;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+select,
+input,
+button {
+  min-width: 0;
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--ink);
+  padding: 8px 10px;
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+  font-weight: 800;
+  white-space: normal;
+}
+
+button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+  gap: 16px;
+}
+
+.viewer-card,
+.side-card {
+  padding: 14px;
+  min-width: 0;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend i {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.legend .speed { background: linear-gradient(90deg, #2f80ed, #27ae60, #f2c94c, #eb5757); border-radius: 999px; width: 30px; }
+.legend .blue { background: var(--blue); }
+.legend .yellow { background: var(--yellow); }
+.legend .white { background: #fff; border: 1px solid #999; }
+.legend .green { background: var(--green); }
+
+.video-wrap {
+  --video-aspect: 16 / 9;
+  position: relative;
+  width: min(100%, var(--video-max-width, 960px));
+  aspect-ratio: var(--video-aspect);
+  max-height: 72vh;
+  margin: 0 auto;
+  overflow: hidden;
+  border-radius: 14px;
+  background: #111;
+}
+
+#video,
+#overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+#video {
+  object-fit: contain;
+}
+
+#overlay {
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.timeline {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 10px;
+  align-items: center;
+  margin-top: 12px;
+}
+
+.side-card {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.hint {
+  font-size: 0.92rem;
+}
+
+.check {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.check input {
+  min-height: unset;
+}
+
+.status {
+  min-height: 44px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.55);
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+pre {
+  max-height: 360px;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  border-radius: 12px;
+  background: #211f1b;
+  color: #f7ead9;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 980px) {
+  .controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+}
+.joint-panel {
+  display: grid;
+  gap: 10px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tpose-view {
+  width: 100%;
+  max-width: 260px;
+  margin: 0 auto;
+  display: block;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.tpose-bone {
+  stroke: rgba(40, 36, 30, 0.42);
+  stroke-width: 7;
+  stroke-linecap: round;
+}
+
+.tpose-joint {
+  fill: #ffffff;
+  stroke: rgba(40, 36, 30, 0.55);
+  stroke-width: 3;
+  cursor: pointer;
+  transition: fill 0.15s ease, stroke 0.15s ease, r 0.15s ease;
+}
+
+.tpose-joint:hover {
+  fill: #f2c94c;
+  stroke: #181614;
+}
+
+.tpose-joint.active {
+  fill: var(--green);
+  stroke: #0f6f3a;
+}
+
+.tpose-joint-label {
+  fill: #6d665d;
+  font-size: 10px;
+  font-weight: 700;
+  pointer-events: none;
+  text-anchor: middle;
+}
+
+.joint-label {
+  text-align: center;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.joint-fallback {
+  margin-top: 2px;
+}
+.preview-card {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--panel);
+  box-shadow: 0 14px 40px rgba(44, 33, 20, 0.08);
+}
+
+.preview-card.hidden {
+  display: none;
+}
+
+.preview-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: start;
+  margin-bottom: 10px;
+}
+
+.preview-label {
+  flex: none;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(200, 77, 50, 0.12);
+  color: var(--accent);
+  font-weight: 800;
+  font-size: 0.82rem;
+}
+
+.preview-video-wrap {
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 14px;
+  background: #111;
+}
+
+#kpPreviewVideo,
+#renderPreviewVideo {
+  display: block;
+  width: min(100%, 860px);
+  max-height: 64vh;
+  object-fit: contain;
+}
+
+
+.topbar > div:first-child,
+.controls label,
+.side-card p,
+.preview-head {
+  min-width: 0;
+}
+
+.side-card,
+.preview-card {
+  overflow: hidden;
+}
+
+
+.hint,
+.joint-label,
+.preview-label,
+pre {
+  overflow-wrap: anywhere;
+}
+
+.controls button {
+  min-width: 0;
+}
+
+@media (max-width: 1180px) {
+  .controls {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+

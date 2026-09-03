@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SplineHMR Trajectory Edit Demo</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div>
+        <h1>SplineHMR Trajectory-Guided Editing</h1>
+        <p>Select a joint, inspect its original SMPL reprojection trajectory, draw a desired 2D path, and generate Spline-Opt keypoints.</p>
+      </div>
+      <div class="badge">MVP</div>
+    </header>
+
+    <section class="controls">
+      <label>
+        Sequence
+        <select id="sequenceSelect"></select>
+      </label>
+      <label>
+        Timing
+        <select id="timingSelect">
+          <option value="original_speed" selected>Original speed profile (endpoint preserving)</option>
+          <option value="absolute_speed">Absolute pixel speed (debug / may clamp)</option>
+          <option value="uniform">Uniform</option>
+        </select>
+      </label>
+      <label>
+        Frame start
+        <input id="frameStart" type="number" min="0" value="0">
+      </label>
+      <label>
+        Frame end
+        <input id="frameEnd" type="number" min="2" placeholder="all">
+      </label>
+      <button id="resetStrokeBtn">Reset stroke</button>
+      <button id="buildBtn" class="primary">Build Spline-Opt input</button>
+    </section>
+
+    <section class="workspace">
+      <div class="viewer-card">
+        <div class="legend">
+          <span><i class="speed"></i>Original trajectory speed</span>
+          <span><i class="yellow"></i>User stroke</span>
+          <span><i class="white"></i>Sampled targets</span>
+          <span><i class="green"></i>Current joint</span>
+        </div>
+        <div id="videoWrap" class="video-wrap">
+          <video id="video" muted loop playsinline></video>
+          <canvas id="overlay"></canvas>
+        </div>
+        <div class="timeline">
+          <button id="playPauseBtn">Play / Pause</button>
+          <input id="frameSlider" type="range" min="0" max="1" value="0">
+          <span id="frameLabel">frame 0</span>
+        </div>
+      </div>
+
+      <aside class="side-card">
+        <section class="joint-panel">
+          <h2>COCO17 Joint Picker</h2>
+          <p class="hint">Click a joint in the T-pose. The selected joint's full-time trajectory is overlaid on the video; color indicates speed.</p>
+          <svg id="tposeView" class="tpose-view" viewBox="0 0 260 330" role="img" aria-label="COCO17 T-pose joint selector"></svg>
+          <div id="jointLabel" class="joint-label">Selected: Left wrist (9)</div>
+          <label class="joint-fallback">
+            Selected joint
+            <select id="jointSelect"></select>
+          </label>
+        </section>
+
+        <h2>Run</h2>
+        <p class="hint">Draw directly on the video. The backend stores an edit package containing the sampled target trajectory and edited COCO17 keypoints.</p>
+        <label class="check">
+          <input id="runOptCheck" type="checkbox">
+          Run Spline-Opt after building input
+        </label>
+        <label>
+          Spline-Opt max iter
+          <input id="maxIter" type="number" min="1" value="60">
+        </label>
+        <label class="check">
+          <input id="renderCheck" type="checkbox">
+          Render result after optimization
+        </label>
+        <div id="status" class="status">Loading sequences...</div>
+        <h2>Timing report</h2>
+        <pre id="report">{}</pre>
+      </aside>
+    </section>
+
+    <section id="kpPreviewCard" class="preview-card hidden">
+      <div class="preview-head">
+        <div>
+          <h2>Edited 2D Keypoints Preview</h2>
+          <p>This is the exact edited COCO17 sequence that will be sent to Spline-Opt.</p>
+        </div>
+        <span id="kpPreviewLabel" class="preview-label">not built yet</span>
+      </div>
+      <div class="preview-video-wrap">
+        <video id="kpPreviewVideo" controls muted loop playsinline></video>
+      </div>
+    </section>
+
+    <section id="renderPreviewCard" class="preview-card hidden">
+      <div class="preview-head">
+        <div>
+          <h2>Spline-Opt Render Result</h2>
+          <p>Red/green overlay comparison after optimization. This appears when Render result is enabled.</p>
+        </div>
+        <span id="renderPreviewLabel" class="preview-label">not rendered yet</span>
+      </div>
+      <div class="preview-video-wrap">
+        <video id="renderPreviewVideo" controls muted loop playsinline></video>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
+
