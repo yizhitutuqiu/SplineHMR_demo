@@ -11,7 +11,7 @@
     <header class="topbar">
       <div>
         <h1>SplineHMR Trajectory-Guided Editing</h1>
-        <p>Select a joint, inspect its original SMPL reprojection trajectory, draw a desired 2D path, and generate Spline-Opt keypoints.</p>
+        <p>Select a joint, inspect its original SMPL reprojection trajectory, draw a desired 2D path or set sparse keyframes, and generate Spline-Opt keypoints.</p>
       </div>
       <div class="badge">MVP</div>
     </header>
@@ -29,6 +29,23 @@
           <option value="uniform">Uniform</option>
         </select>
       </label>
+      <label class="switch-label">
+        Edit mode
+        <span class="switch-row">
+          <span>Stroke</span>
+          <input id="keyframeModeCheck" class="switch-input" type="checkbox" role="switch" aria-label="Enable keyframe mode">
+          <span class="switch-ui" aria-hidden="true"></span>
+          <span>Keyframes</span>
+        </span>
+      </label>
+      <label id="interpolationLabel" class="hidden">
+        Interpolation
+        <select id="interpolationSelect">
+          <option value="linear" selected>Linear</option>
+          <option value="bezier">Bezier</option>
+          <option value="bspline">B-spline</option>
+        </select>
+      </label>
       <label>
         Frame start
         <input id="frameStart" type="number" min="0" value="0">
@@ -37,21 +54,34 @@
         Frame end
         <input id="frameEnd" type="number" min="2" placeholder="all">
       </label>
-      <button id="resetStrokeBtn">Reset stroke</button>
+      <button id="resetStrokeBtn">Reset edit</button>
       <button id="buildBtn" class="primary">Build Spline-Opt input</button>
     </section>
 
     <section class="workspace">
-      <div class="viewer-card">
+      <div class="main-column">
+        <div class="viewer-card">
         <div class="legend">
           <span><i class="speed"></i>Original trajectory speed</span>
-          <span><i class="yellow"></i>User stroke</span>
+          <span><i class="yellow"></i>User stroke / keyframes</span>
           <span><i class="white"></i>Sampled targets</span>
           <span><i class="green"></i>Current joint</span>
         </div>
-        <div id="videoWrap" class="video-wrap">
-          <video id="video" muted loop playsinline></video>
-          <canvas id="overlay"></canvas>
+        <div class="dual-viewer">
+          <div class="viewer-pane">
+            <div class="pane-title">SMPLX source preview</div>
+            <div id="displayVideoWrap" class="video-wrap display-wrap">
+              <video id="displayVideo" muted loop playsinline></video>
+              <canvas id="displayOverlay" aria-label="SMPLX source preview overlay"></canvas>
+            </div>
+          </div>
+          <div class="viewer-pane">
+            <div class="pane-title">Editable 2D target canvas</div>
+            <div id="videoWrap" class="video-wrap edit-wrap">
+              <video id="video" muted loop playsinline></video>
+              <canvas id="overlay"></canvas>
+            </div>
+          </div>
         </div>
         <div class="timeline">
           <button id="playPauseBtn">Play / Pause</button>
@@ -60,45 +90,16 @@
         </div>
       </div>
 
-      <aside class="side-card">
-        <section class="joint-panel">
-          <h2>COCO17 Joint Picker</h2>
-          <p class="hint">Click a joint in the T-pose. The selected joint's full-time trajectory is overlaid on the video; color indicates speed.</p>
-          <svg id="tposeView" class="tpose-view" viewBox="0 0 260 330" role="img" aria-label="COCO17 T-pose joint selector"></svg>
-          <div id="jointLabel" class="joint-label">Selected: Left wrist (9)</div>
-          <label class="joint-fallback">
-            Selected joint
-            <select id="jointSelect"></select>
-          </label>
-        </section>
-
-        <h2>Run</h2>
-        <p class="hint">Draw directly on the video. The backend stores an edit package containing the sampled target trajectory and edited COCO17 keypoints.</p>
-        <label class="check">
-          <input id="runOptCheck" type="checkbox">
-          Run Spline-Opt after building input
-        </label>
-        <label>
-          Spline-Opt max iter
-          <input id="maxIter" type="number" min="1" value="60">
-        </label>
-        <label class="check">
-          <input id="renderCheck" type="checkbox">
-          Render result after optimization
-        </label>
-        <div id="status" class="status">Loading sequences...</div>
-        <h2>Timing report</h2>
-        <pre id="report">{}</pre>
-      </aside>
-    </section>
-
     <section id="kpPreviewCard" class="preview-card hidden">
       <div class="preview-head">
         <div>
           <h2>Edited 2D Keypoints Preview</h2>
           <p>This is the exact edited COCO17 sequence that will be sent to Spline-Opt.</p>
         </div>
-        <span id="kpPreviewLabel" class="preview-label">not built yet</span>
+        <div class="preview-actions">
+          <span id="kpPreviewLabel" class="preview-label">not built yet</span>
+          <a id="kpPreviewDownload" class="download-btn hidden" href="#" download>Download video</a>
+        </div>
       </div>
       <div class="preview-video-wrap">
         <video id="kpPreviewVideo" controls muted loop playsinline></video>
@@ -111,12 +112,108 @@
           <h2>Spline-Opt Render Result</h2>
           <p>Red/green overlay comparison after optimization. This appears when Render result is enabled.</p>
         </div>
-        <span id="renderPreviewLabel" class="preview-label">not rendered yet</span>
+        <div class="preview-actions">
+          <label class="overlay-toggle">
+            <input id="render2dOverlayCheck" type="checkbox" checked>
+            Show 2D trajectories
+          </label>
+          <span id="renderPreviewLabel" class="preview-label">not rendered yet</span>
+          <a id="renderPreviewDownload" class="download-btn hidden" href="#" download>Download shown video</a>
+        </div>
       </div>
       <div class="preview-video-wrap">
         <video id="renderPreviewVideo" controls muted loop playsinline></video>
       </div>
+      <div id="renderDownloads" class="download-row hidden" aria-label="Rendered video downloads"></div>
     </section>
+      </div>
+
+      <aside class="side-card">
+        <section class="joint-panel">
+          <h2>COCO17 Joint Picker</h2>
+          <p class="hint compact">Click joint · speed color: blue→red</p>
+          <svg id="tposeView" class="tpose-view" viewBox="0 0 260 330" role="img" aria-label="COCO17 T-pose joint selector"></svg>
+          <div id="jointLabel" class="joint-label">Selected: Left wrist (9)</div>
+          <label class="joint-fallback">
+            Selected joint
+            <select id="jointSelect"></select>
+          </label>
+        </section>
+
+        <div class="run-head">Run</div>
+        <div class="run-compact">
+          <label class="check compact-check">
+            <input id="runOptCheck" type="checkbox">
+            Run Spline-Opt
+          </label>
+          <label class="check compact-check">
+            <input id="renderCheck" type="checkbox">
+            Render
+          </label>
+          <label class="max-iter-compact">
+            <span>max iter <small>default: 60</small></span>
+            <input id="maxIter" type="number" min="1" value="60">
+          </label>
+        </div>
+        <details id="bsplineParamPanel" class="advanced-panel">
+          <summary>B-spline optimization parameters</summary>
+          <div class="advanced-grid">
+            <label>Degree <small>default: 3</small>
+              <input id="bsDegree" type="number" min="1" max="5" step="1" placeholder="3">
+            </label>
+            <label>Control density m_per_t <small>default: fps_div_2</small>
+              <input id="bsMPerT" type="text" placeholder="fps_div_2">
+            </label>
+            <label>Confidence threshold <small>default: 0.3</small>
+              <input id="bsConfThr" type="number" min="0" max="1" step="0.01" placeholder="0.3">
+            </label>
+            <label>Confidence power <small>default: 4.0</small>
+              <input id="bsConfPower" type="number" min="0" step="0.1" placeholder="4.0">
+            </label>
+            <label>Body prior weight <small>default: 0.02</small>
+              <input id="bsPriorBody" type="number" min="0" step="0.001" placeholder="0.02">
+            </label>
+            <label>Smoothness weight <small>default: 0.02</small>
+              <input id="bsSmoothW" type="number" min="0" step="0.001" placeholder="0.02">
+            </label>
+            <label>LBFGS lr <small>default: 1.0</small>
+              <input id="bsLr" type="number" min="0" step="0.05" placeholder="1.0">
+            </label>
+            <label>Line search <small>default: strong_wolfe</small>
+              <select id="bsLineSearch">
+                <option value="" selected>default: strong_wolfe</option>
+                <option value="strong_wolfe">strong_wolfe</option>
+                <option value="none">none</option>
+              </select>
+            </label>
+            <label class="check advanced-check">
+              <input id="bsLearnKnots" type="checkbox">
+              Learn knots <small>default: false</small>
+            </label>
+            <label>Knot min gap <small>default: 0.001</small>
+              <input id="bsKnotMinGap" type="number" min="0" step="0.0001" placeholder="0.001">
+            </label>
+            <label>Knot position weight <small>default: 1.0</small>
+              <input id="bsKnotPosW" type="number" min="0" step="0.05" placeholder="1.0">
+            </label>
+            <label>Knot gap weight <small>default: 0.2</small>
+              <input id="bsKnotGapW" type="number" min="0" step="0.01" placeholder="0.2">
+            </label>
+          </div>
+          <p class="hint compact">Leave a field empty to use the validated SplineHMR trajectory-edit default.</p>
+        </details>
+        <details id="keyframePanel" class="keyframe-panel">
+          <summary>Keyframes</summary>
+          <div id="keyframeList" class="keyframe-list">No keyframes yet.</div>
+        </details>
+        <div id="status" class="status">Loading sequences...</div>
+        <details class="debug-report">
+          <summary>Debug report</summary>
+          <pre id="report">{}</pre>
+        </details>
+      </aside>
+    </section>
+
   </main>
 
   <script src="/static/app.js"></script>

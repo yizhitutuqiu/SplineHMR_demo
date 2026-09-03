@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from splinehmr_demo.edit import create_edit
 from splinehmr_demo.paths import DEMO_ROOT, OUTPUTS_ROOT
-from splinehmr_demo.sequence import input_video_path, list_sequences, sequence_meta
+from splinehmr_demo.sequence import input_video_path, list_sequences, sequence_meta, source_render_path
 from splinehmr_demo.spline_opt_bridge import run_spline_opt_for_edit
 
 
@@ -128,6 +128,13 @@ class DemoHandler(BaseHTTPRequestHandler):
                 parts = path.split("/")
                 if len(parts) >= 5 and parts[4] == "0_input_video.mp4":
                     return self._send_file(input_video_path(parts[3]), content_type="video/mp4", head_only=True)
+            if path.startswith("/media/source_render/"):
+                parts = path.split("/")
+                if len(parts) >= 5 and parts[4] == "render_before.mp4":
+                    render = source_render_path(parts[3])
+                    if render is None:
+                        return self.send_error(HTTPStatus.NOT_FOUND, "Source render not found")
+                    return self._send_file(render, content_type="video/mp4", head_only=True)
             if path.startswith("/outputs/"):
                 rel = Path(path[len("/outputs/") :])
                 target = (OUTPUTS_ROOT / rel).resolve()
@@ -158,6 +165,13 @@ class DemoHandler(BaseHTTPRequestHandler):
                 parts = path.split("/")
                 if len(parts) >= 5 and parts[4] == "0_input_video.mp4":
                     return self._send_file(input_video_path(parts[3]), content_type="video/mp4")
+            if path.startswith("/media/source_render/"):
+                parts = path.split("/")
+                if len(parts) >= 5 and parts[4] == "render_before.mp4":
+                    render = source_render_path(parts[3])
+                    if render is None:
+                        return self.send_error(HTTPStatus.NOT_FOUND, "Source render not found")
+                    return self._send_file(render, content_type="video/mp4")
             if path.startswith("/outputs/"):
                 rel = Path(path[len("/outputs/") :])
                 target = (OUTPUTS_ROOT / rel).resolve()
@@ -187,6 +201,7 @@ class DemoHandler(BaseHTTPRequestHandler):
                     max_iter=(None if payload.get("max_iter", None) in (None, "", "default") else int(payload.get("max_iter"))),
                     render=bool(payload.get("render", False)),
                     crf=int(payload.get("crf", 23)),
+                    bspline_overrides=payload.get("bspline_overrides", None),
                     request_id=request_id,
                 )
                 response = {"status": "ok", "request_id": request_id, "result": result}

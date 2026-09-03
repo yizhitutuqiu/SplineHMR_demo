@@ -127,6 +127,20 @@ def input_video_path(name: str) -> Path:
     return path
 
 
+def source_render_path(name: str) -> Path | None:
+    safe = Path(name).name
+    candidates = [
+        SPLINEHMR_ROOT / "outputs" / safe / "spline-opt" / "render_before.mp4",
+        SPLINEHMR_ROOT / "outputs" / safe / "spline-diff" / "render_before.mp4",
+    ]
+    for path in candidates:
+        if path.exists() and path.is_file():
+            return path
+    return None
+
+
+
+
 def load_hmr(name: str) -> dict[str, Any]:
     path = sequence_dir(name) / "hmr4d_results.pt"
     return torch.load(str(path), map_location="cpu")
@@ -239,6 +253,7 @@ def sequence_meta(name: str, *, device: str = "cuda") -> dict[str, Any]:
     return {
         "name": Path(name).name,
         "video_url": f"/media/sequence/{Path(name).name}/0_input_video.mp4",
+        "source_render_url": (f"/media/source_render/{Path(name).name}/render_before.mp4" if source_render_path(name) is not None else None),
         "video": meta.to_dict(),
         "num_frames": int(T),
         "joint_format": "coco17",
