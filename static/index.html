@@ -17,45 +17,75 @@
     </header>
 
     <section class="controls">
-      <label>
-        Sequence
-        <select id="sequenceSelect"></select>
-      </label>
-      <label>
-        Timing
-        <select id="timingSelect">
-          <option value="original_speed" selected>Original speed profile (endpoint preserving)</option>
-          <option value="absolute_speed">Absolute pixel speed (debug / may clamp)</option>
-          <option value="uniform">Uniform</option>
-        </select>
-      </label>
-      <label class="switch-label">
-        Edit mode
-        <span class="switch-row">
-          <span>Stroke</span>
-          <input id="keyframeModeCheck" class="switch-input" type="checkbox" role="switch" aria-label="Enable keyframe mode">
-          <span class="switch-ui" aria-hidden="true"></span>
-          <span>Keyframes</span>
-        </span>
-      </label>
-      <label id="interpolationLabel" class="hidden">
-        Interpolation
-        <select id="interpolationSelect">
-          <option value="linear" selected>Linear</option>
-          <option value="bezier">Bezier</option>
-          <option value="bspline">B-spline</option>
-        </select>
-      </label>
-      <label>
-        Frame start
-        <input id="frameStart" type="number" min="0" value="0">
-      </label>
-      <label>
-        Frame end
-        <input id="frameEnd" type="number" min="2" placeholder="all">
-      </label>
-      <button id="resetStrokeBtn">Reset edit</button>
-      <button id="buildBtn" class="primary">Build Spline-Opt input</button>
+      <div class="controls-grid">
+        <label>
+          Sequence
+          <select id="sequenceSelect"></select>
+        </label>
+        <label>
+          Timing
+          <select id="timingSelect">
+            <option value="original_speed" selected>Original speed</option>
+            <option value="absolute_speed">Absolute speed</option>
+            <option value="uniform">Uniform</option>
+          </select>
+        </label>
+        <label class="switch-label">
+          Edit mode
+          <span class="switch-row">
+            <span>Stroke</span>
+            <input id="keyframeModeCheck" class="switch-input" type="checkbox" role="switch" aria-label="Enable keyframe mode">
+            <span class="switch-ui" aria-hidden="true"></span>
+            <span>Keyframes</span>
+          </span>
+        </label>
+        <label id="interpolationLabel" class="hidden">
+          Interpolation
+          <select id="interpolationSelect">
+            <option value="linear" selected>Linear</option>
+            <option value="bezier">Bezier</option>
+            <option value="bspline">B-spline</option>
+          </select>
+        </label>
+        <label>
+          Frame start
+          <input id="frameStart" type="number" min="0" value="0">
+        </label>
+        <label>
+          Frame end
+          <input id="frameEnd" type="number" min="2" placeholder="all">
+        </label>
+        <button id="resetStrokeBtn">Reset edit</button>
+      </div>
+      <div class="build-action-row">
+        <button id="buildBtn" class="primary">Build Spline-Opt input</button>
+      </div>
+    </section>
+
+    <section class="upload-card">
+      <div class="upload-head">
+        <div>
+          <h2>Upload video and initialize with GVHMR</h2>
+          <p>Optional: upload a new video, run GVHMR in the <code>gvhmr</code> conda environment, then edit the generated SMPL-X initialization.</p>
+        </div>
+      </div>
+      <div class="upload-controls">
+        <input id="videoUpload" type="file" accept="video/*,.mp4,.mov,.avi,.mkv">
+        <button id="uploadBtn" type="button">Run GVHMR initialization</button>
+        <button id="uploadStopBtn" class="danger hidden" type="button">Stop GVHMR</button>
+      </div>
+      <div id="uploadProgressWrap" class="upload-progress hidden">
+        <div class="progress-line">
+          <span id="uploadStage">Queued</span>
+          <span id="uploadPercent">0%</span>
+        </div>
+        <progress id="uploadProgress" max="100" value="0"></progress>
+        <div id="uploadStatus" class="upload-status">Waiting...</div>
+        <details class="upload-log-wrap">
+          <summary>GVHMR live log</summary>
+          <pre id="uploadLog"></pre>
+        </details>
+      </div>
     </section>
 
     <section class="workspace">
@@ -150,10 +180,27 @@
             <input id="renderCheck" type="checkbox">
             Render
           </label>
+          <label class="check compact-check">
+            <input id="preview2dCheck" type="checkbox">
+            2D preview
+          </label>
           <label class="max-iter-compact">
             <span>max iter <small>default: 60</small></span>
             <input id="maxIter" type="number" min="1" value="60">
           </label>
+          <button id="stopSplineOptBtn" class="danger hidden" type="button">Stop Spline-Opt</button>
+        </div>
+        <div id="splineOptProgressWrap" class="upload-progress hidden">
+          <div class="progress-line">
+            <span id="splineOptStage">Queued</span>
+            <span id="splineOptPercent">0%</span>
+          </div>
+          <progress id="splineOptProgress" max="100" value="0"></progress>
+          <div id="splineOptStatus" class="upload-status">Waiting...</div>
+          <details class="upload-log-wrap">
+            <summary>Spline-Opt live log</summary>
+            <pre id="splineOptLog"></pre>
+          </details>
         </div>
         <details id="bsplineParamPanel" class="advanced-panel">
           <summary>B-spline optimization parameters</summary>

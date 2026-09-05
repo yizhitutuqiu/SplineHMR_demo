@@ -7,6 +7,11 @@ const state = {
   lastEdit: null,
   lastRenderResult: null,
   selectedJointName: null,
+  gvhmrPollTimer: null,
+  activeGVHMRJobId: null,
+  splineOptPollTimer: null,
+  activeSplineOptJobId: null,
+  splineOptRunning: false,
 };
 
 const els = {
@@ -24,6 +29,15 @@ const els = {
   frameEnd: document.getElementById("frameEnd"),
   reset: document.getElementById("resetStrokeBtn"),
   build: document.getElementById("buildBtn"),
+  videoUpload: document.getElementById("videoUpload"),
+  uploadBtn: document.getElementById("uploadBtn"),
+  uploadStopBtn: document.getElementById("uploadStopBtn"),
+  uploadProgressWrap: document.getElementById("uploadProgressWrap"),
+  uploadProgress: document.getElementById("uploadProgress"),
+  uploadStage: document.getElementById("uploadStage"),
+  uploadPercent: document.getElementById("uploadPercent"),
+  uploadStatus: document.getElementById("uploadStatus"),
+  uploadLog: document.getElementById("uploadLog"),
   displayVideo: document.getElementById("displayVideo"),
   displayWrap: document.getElementById("displayVideoWrap"),
   displayCanvas: document.getElementById("displayOverlay"),
@@ -38,6 +52,7 @@ const els = {
   runOpt: document.getElementById("runOptCheck"),
   maxIter: document.getElementById("maxIter"),
   render: document.getElementById("renderCheck"),
+  preview2d: document.getElementById("preview2dCheck"),
   bsDegree: document.getElementById("bsDegree"),
   bsMPerT: document.getElementById("bsMPerT"),
   bsConfThr: document.getElementById("bsConfThr"),
@@ -60,6 +75,13 @@ const els = {
   renderPreviewDownload: document.getElementById("renderPreviewDownload"),
   render2dOverlay: document.getElementById("render2dOverlayCheck"),
   renderDownloads: document.getElementById("renderDownloads"),
+  stopSplineOpt: document.getElementById("stopSplineOptBtn"),
+  splineOptProgressWrap: document.getElementById("splineOptProgressWrap"),
+  splineOptProgress: document.getElementById("splineOptProgress"),
+  splineOptStage: document.getElementById("splineOptStage"),
+  splineOptPercent: document.getElementById("splineOptPercent"),
+  splineOptStatus: document.getElementById("splineOptStatus"),
+  splineOptLog: document.getElementById("splineOptLog"),
 };
 
 const ctx = els.canvas.getContext("2d");
@@ -228,6 +250,7 @@ function defaultJointEdit(mode = editModeFromUI()) {
     stroke: [],
     keyframes: [],
     sampled: [],
+    sampledMask: [],
     timingReport: null,
   };
 }
@@ -371,7 +394,7 @@ function renderKeyframeList() {
   const {start, end} = selectedFrameRange();
   const kfs = sortedKeyframes(spec);
   if (!kfs.length) {
-    els.keyframeList.textContent = `Need frame ${start} and ${end}.`;
+    els.keyframeList.textContent = `Add at least two keyframes. Full-range keys are optional.`;
     return;
   }
   els.keyframeList.innerHTML = "";
@@ -406,14 +429,63 @@ function renderKeyframeList() {
 
 function validateKeyframesForBuild(jointName, spec) {
   const {start, end} = selectedFrameRange();
-  if (!keyframeHasFrame(start, spec) || !keyframeHasFrame(end, spec)) {
-    throw new Error(`${jointName}: keyframe mode requires keyframes at frame ${start} and frame ${end}.`);
+  const kfs = sortedKeyframes(spec);
+  if (kfs.length < 2) throw new Error(`${jointName}: keyframe mode requires at least two keyframes.`);
+  if (Number(kfs[0].frame) < start || Number(kfs[kfs.length - 1].frame) > end) {
+    throw new Error(`${jointName}: keyframes must lie inside selected range [${start}, ${end}].`);
   }
-  if ((spec.keyframes || []).length < 2) throw new Error(`${jointName}: keyframe mode requires at least two keyframes.`);
 }
 
 function setStatus(text) {
   els.status.textContent = text;
+}
+
+function setUploadProgress(job) {
+  if (!job || !els.uploadProgressWrap) return;
+  els.uploadProgressWrap.classList.remove("hidden");
+  const progress = Math.max(0, Math.min(100, Number(job.progress || 0)));
+  if (els.uploadProgress) els.uploadProgress.value = progress;
+  if (els.uploadStage) els.uploadStage.textContent = job.stage || job.status || "GVHMR";
+  if (els.uploadPercent) els.uploadPercent.textContent = `${Math.round(progress)}%`;
+  if (els.uploadStatus) els.uploadStatus.textContent = job.message || job.status || "Working...";
+  if (els.uploadLog) els.uploadLog.textContent = (job.recent_log || []).join("\n");
+}
+
+function setUploadBusy(busy) {
+  if (els.uploadBtn) els.uploadBtn.disabled = busy;
+  if (els.videoUpload) els.videoUpload.disabled = busy;
+  if (els.uploadStopBtn) els.uploadStopBtn.classList.toggle("hidden", !busy);
+}
+
+function setSplineOptProgress(job) {
+  if (!job || !els.splineOptProgressWrap) return;
+  els.splineOptProgressWrap.classList.remove("hidden");
+  const progress = Math.max(0, Math.min(100, Number(job.progress || 0)));
+  if (els.splineOptProgress) els.splineOptProgress.value = progress;
+  if (els.splineOptStage) els.splineOptStage.textContent = job.stage || job.status || "Spline-Opt";
+  if (els.splineOptPercent) els.splineOptPercent.textContent = `${Math.round(progress)}%`;
+  if (els.splineOptStatus) els.splineOptStatus.textContent = job.message || job.status || "Working...";
+  if (els.splineOptLog) els.splineOptLog.textContent = (job.recent_log || []).join("\n");
+}
+
+function setSplineOptBusy(busy) {
+  state.splineOptRunning = Boolean(busy);
+  if (els.build) els.build.disabled = busy;
+  if (els.stopSplineOpt) els.stopSplineOpt.classList.toggle("hidden", !busy);
+}
+
+function stopGVHMRPolling() {
+  if (state.gvhmrPollTimer) {
+    clearTimeout(state.gvhmrPollTimer);
+    state.gvhmrPollTimer = null;
+  }
+}
+
+function stopSplineOptPolling() {
+  if (state.splineOptPollTimer) {
+    clearTimeout(state.splineOptPollTimer);
+    state.splineOptPollTimer = null;
+  }
 }
 
 function setReport(obj) {
@@ -551,12 +623,14 @@ function drawPoint(p, color, r = 5, stroke = "rgba(0,0,0,.55)") {
   drawPointWith(ctx, p, color, r, stroke);
 }
 
-function drawSkeletonOn(ctxLike, frame, {interactive = false} = {}) {
+function drawSkeletonOn(ctxLike, frame, {interactive = false, showEditedMarkers = false} = {}) {
   const meta = state.meta;
   if (!meta || !meta.keypoints_2d?.[frame]) return;
   const kps = meta.keypoints_2d[frame];
   const selectedIdx = selectedJointIndex();
-  const editedIdx = new Set(editedJointNames().map((name) => Number(getJointInfo(name)?.index)).filter((x) => Number.isFinite(x)));
+  const editedIdx = showEditedMarkers
+    ? new Set(editedJointNames().map((name) => Number(getJointInfo(name)?.index)).filter((x) => Number.isFinite(x)))
+    : new Set();
   ctxLike.save();
   ctxLike.globalAlpha = interactive ? 0.8 : 0.72;
   ctxLike.strokeStyle = "rgba(255,255,255,.82)";
@@ -636,27 +710,40 @@ function drawKeyframesForSpec(spec, active = false) {
 
 function drawSampledTargetsForSpec(spec, active = false) {
   if (!spec?.sampled?.length) return;
-  drawPolyline(spec.sampled, active ? "rgba(39,174,96,.82)" : "rgba(39,174,96,.42)", active ? 3 : 2);
-  const stride = Math.max(1, Math.floor(spec.sampled.length / (active ? 40 : 24)));
-  for (let i = 0; i < spec.sampled.length; i += stride) {
+  const mask = Array.isArray(spec.sampledMask) && spec.sampledMask.length === spec.sampled.length
+    ? spec.sampledMask.map(Boolean)
+    : spec.sampled.map(() => true);
+  const color = active ? "rgba(39,174,96,.82)" : "rgba(39,174,96,.42)";
+  const width = active ? 3 : 2;
+  let segment = [];
+  const flush = () => {
+    if (segment.length >= 2) drawPolyline(segment, color, width);
+    segment = [];
+  };
+  for (let i = 0; i < spec.sampled.length; i++) {
+    if (mask[i]) segment.push(spec.sampled[i]);
+    else flush();
+  }
+  flush();
+  const activeIdx = mask.map((m, i) => m ? i : -1).filter((i) => i >= 0);
+  const stride = Math.max(1, Math.floor(activeIdx.length / (active ? 40 : 24)));
+  for (let k = 0; k < activeIdx.length; k += stride) {
+    const i = activeIdx[k];
     drawPoint(spec.sampled[i], active ? "white" : "rgba(255,255,255,.75)", active ? 3 : 2, "rgba(39,174,96,.9)");
   }
 }
 
 function drawEditOverlays() {
   const selected = selectedJointName();
-  const names = editedJointNames();
-  for (const name of names) {
-    if (name !== selected) drawOriginalTrajectoryForJoint(name, false);
-  }
+  const spec = getJointEdit(selected, false);
+
+  // Keep the editing canvas focused: multi-joint edits are preserved in state and
+  // shown in the T-pose picker, but this canvas only visualizes the active joint.
   drawOriginalTrajectoryForJoint(selected, true);
-  for (const name of names) {
-    const spec = getJointEdit(name, false);
-    const active = name === selected;
-    if (spec?.mode === "stroke") drawUserStrokeForSpec(spec, active);
-    else if (spec?.mode === "keyframe") drawKeyframesForSpec(spec, active);
-    drawSampledTargetsForSpec(spec, active);
-  }
+  if (spec?.mode === "stroke") drawUserStrokeForSpec(spec, true);
+  else if (spec?.mode === "keyframe") drawKeyframesForSpec(spec, true);
+  drawSampledTargetsForSpec(spec, true);
+
   const frame = currentFrameIndex();
   const p = state.meta?.keypoints_2d?.[frame]?.[selectedJointIndex()];
   if (p) drawPoint(p, "#27ae60", 9);
@@ -778,7 +865,8 @@ function setSelectedJoint(nameOrIndex) {
   drawAllOverlays();
 }
 
-async function loadSequences() {
+async function loadSequences(preferredName = null) {
+  const previous = els.sequence?.value || null;
   const data = await fetchJson("/api/sequences");
   state.sequences = data.sequences || [];
   els.sequence.innerHTML = "";
@@ -792,7 +880,14 @@ async function loadSequences() {
     setStatus("No sequences found. Expected SplineHMR/inputs/<seq>/0_input_video.mp4 and hmr4d_results.pt.");
     return;
   }
-  await loadSequence(els.sequence.value || state.sequences[0].name);
+  const names = new Set(state.sequences.map((seq) => seq.name));
+  const target = (preferredName && names.has(preferredName))
+    ? preferredName
+    : (previous && names.has(previous))
+      ? previous
+      : (els.sequence.value || state.sequences[0].name);
+  els.sequence.value = target;
+  await loadSequence(target);
 }
 
 async function loadSequence(name) {
@@ -880,6 +975,7 @@ async function buildEdit() {
       frame_start: Number(els.frameStart.value || 0),
       frame_end: els.frameEnd.value === "" ? null : Number(els.frameEnd.value),
       trajectory_source: "smpl_reproj",
+      generate_preview: Boolean(els.preview2d?.checked),
     };
     const data = await fetchJson("/api/edit", {
       method: "POST",
@@ -894,20 +990,23 @@ async function buildEdit() {
     for (const item of data.edit.joint_edits || []) {
       const spec = getJointEdit(item.joint, true);
       spec.sampled = item.sampled_target_trajectory_px || [];
+      spec.sampledMask = item.edit_mask || [];
       spec.timingReport = item.timing_report || null;
     }
     drawAllOverlays();
     updateTposeActive();
     setSelectedJoint(selectedJointName());
-    showKeypointPreview(data.edit);
+    hideKeypointPreview();
+    if (data.edit.generate_preview) showKeypointPreview(data.edit);
 
-    setStatus(`Edit package written for ${data.edit.num_edited_joints || 1} joint(s): ${data.edit.paths.output_dir}`);
+    const previewNote = data.edit.generate_preview ? " Preview is shown below." : " 2D preview skipped.";
+    setStatus(`Edit package written for ${data.edit.num_edited_joints || 1} joint(s).${previewNote}`);
     if (els.runOpt.checked) await runSplineOpt(data.edit.paths.edit_request);
   } catch (err) {
     console.error(err);
     setStatus(`Error: ${err.message}`);
   } finally {
-    els.build.disabled = false;
+    if (!state.splineOptRunning) els.build.disabled = false;
   }
 }
 
@@ -953,22 +1052,159 @@ function collectBsplineOverrides() {
   return overrides;
 }
 
+async function pollSplineOptJob(jobId) {
+  stopSplineOptPolling();
+  try {
+    const data = await fetchJson(`/api/spline_opt_job/${encodeURIComponent(jobId)}`);
+    const job = data.job;
+    setSplineOptProgress(job);
+    if (job.status === "done") {
+      setSplineOptBusy(false);
+      state.lastRenderResult = job.result || null;
+      const shown = showRenderPreview(job.result);
+      setStatus(shown ? "Spline-Opt done. Render result is shown below." : `Spline-Opt done: ${job.result?.output_dir || job.job_id}`);
+      setReport(job.result || job);
+      return;
+    }
+    if (job.status === "error") {
+      setSplineOptBusy(false);
+      setStatus(`Spline-Opt failed: ${job.error || job.message}`);
+      setReport(job);
+      return;
+    }
+    if (job.status === "canceled") {
+      setSplineOptBusy(false);
+      setStatus("Spline-Opt stopped. You can edit or run again.");
+      setReport(job);
+      return;
+    }
+    state.splineOptPollTimer = setTimeout(() => pollSplineOptJob(jobId), 1000);
+  } catch (err) {
+    setSplineOptBusy(false);
+    setStatus(`Spline-Opt status polling failed: ${err.message}`);
+  }
+}
+
 async function runSplineOpt(editRequestPath) {
-  setStatus("Running Spline-Opt. This may take a while...");
-  const data = await fetchJson("/api/run_spline_opt", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({
-      edit_request_path: editRequestPath,
-      max_iter: els.maxIter.value === "" ? "default" : Number(els.maxIter.value || 60),
-      render: Boolean(els.render.checked),
-      device: "cuda",
-      bspline_overrides: collectBsplineOverrides(),
-    }),
-  });
-  const shown = showRenderPreview(data.result);
-  setStatus(shown ? "Spline-Opt done. Render result is shown below." : `Spline-Opt done: ${data.result.output_dir}`);
-  setReport(data.result);
+  stopSplineOptPolling();
+  setSplineOptBusy(true);
+  setStatus("Starting Spline-Opt...");
+  setSplineOptProgress({stage: "Queued", progress: 1, message: "Submitting Spline-Opt job...", recent_log: []});
+  try {
+    const data = await fetchJson("/api/run_spline_opt", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        edit_request_path: editRequestPath,
+        max_iter: els.maxIter.value === "" ? "default" : Number(els.maxIter.value || 60),
+        render: Boolean(els.render.checked),
+        device: "cuda",
+        bspline_overrides: collectBsplineOverrides(),
+      }),
+    });
+    state.activeSplineOptJobId = data.job.job_id;
+    setSplineOptProgress(data.job);
+    setStatus(`Spline-Opt job started: ${data.job.job_id}`);
+    pollSplineOptJob(data.job.job_id);
+  } catch (err) {
+    setSplineOptBusy(false);
+    throw err;
+  }
+}
+
+
+async function pollGVHMRJob(jobId) {
+  stopGVHMRPolling();
+  try {
+    const data = await fetchJson(`/api/gvhmr_job/${encodeURIComponent(jobId)}`);
+    const job = data.job;
+    setUploadProgress(job);
+    if (job.status === "done") {
+      setUploadBusy(false);
+      const seq = job.result?.sequence || job.sequence;
+      setStatus(`GVHMR initialization finished. Loading ${seq}...`);
+      await loadSequences(seq);
+      setStatus(`${seq} loaded from uploaded video. You can now edit trajectories as usual.`);
+      return;
+    }
+    if (job.status === "error") {
+      setUploadBusy(false);
+      setStatus(`GVHMR failed: ${job.error || job.message}`);
+      return;
+    }
+    if (job.status === "canceled") {
+      setUploadBusy(false);
+      setStatus("GVHMR stopped. You can upload another video or continue editing existing sequences.");
+      return;
+    }
+    state.gvhmrPollTimer = setTimeout(() => pollGVHMRJob(jobId), 1500);
+  } catch (err) {
+    setUploadBusy(false);
+    setStatus(`GVHMR status polling failed: ${err.message}`);
+  }
+}
+
+async function uploadVideoAndRunGVHMR() {
+  const file = els.videoUpload?.files?.[0];
+  if (!file) {
+    setStatus("Please choose a video file first.");
+    return;
+  }
+  stopGVHMRPolling();
+  hideKeypointPreview();
+  hideRenderPreview();
+  setReport({});
+  setUploadBusy(true);
+  if (els.uploadProgressWrap) els.uploadProgressWrap.classList.remove("hidden");
+  setUploadProgress({stage: "Uploading", progress: 1, message: `Uploading ${file.name}...`, recent_log: []});
+  try {
+    const form = new FormData();
+    form.append("video", file, file.name);
+    const res = await fetch("/api/upload_video", {method: "POST", body: form});
+    const data = await res.json();
+    if (!res.ok || data.status === "error") {
+      const req = data.request_id ? `[request_id=${data.request_id}] ` : "";
+      throw new Error(`${req}${data.detail || data.error || "Upload failed"}`);
+    }
+    state.activeGVHMRJobId = data.job.job_id;
+    setUploadProgress(data.job);
+    setStatus(`GVHMR job started: ${data.job.job_id}`);
+    pollGVHMRJob(data.job.job_id);
+  } catch (err) {
+    console.error(err);
+    setUploadBusy(false);
+    setStatus(`Upload/GVHMR error: ${err.message}`);
+  }
+}
+
+async function stopActiveGVHMRJob() {
+  const jobId = state.activeGVHMRJobId;
+  if (!jobId) return;
+  try {
+    setStatus("Stopping GVHMR...");
+    const data = await fetchJson(`/api/gvhmr_job/${encodeURIComponent(jobId)}/stop`, {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+    setUploadProgress(data.job);
+    setUploadBusy(false);
+    stopGVHMRPolling();
+    setStatus("GVHMR stopped. You can upload another video or continue editing existing sequences.");
+  } catch (err) {
+    setStatus(`Failed to stop GVHMR: ${err.message}`);
+  }
+}
+
+async function stopActiveSplineOptJob() {
+  const jobId = state.activeSplineOptJobId;
+  if (!jobId) return;
+  try {
+    setStatus("Stopping Spline-Opt...");
+    const data = await fetchJson(`/api/spline_opt_job/${encodeURIComponent(jobId)}/stop`, {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+    setSplineOptProgress(data.job);
+    setSplineOptBusy(false);
+    stopSplineOptPolling();
+    setStatus("Spline-Opt stopped. You can edit or run again.");
+  } catch (err) {
+    setStatus(`Failed to stop Spline-Opt: ${err.message}`);
+  }
 }
 
 els.sequence.addEventListener("change", () => loadSequence(els.sequence.value));
@@ -994,6 +1230,11 @@ els.interpolation.addEventListener("change", () => {
   renderKeyframeList();
   drawAllOverlays();
 });
+if (els.preview2d) {
+  els.preview2d.addEventListener("change", () => {
+    if (!els.preview2d.checked) hideKeypointPreview();
+  });
+}
 if (els.render2dOverlay) {
   els.render2dOverlay.addEventListener("change", () => {
     refreshShownRenderVideo({cacheBust: false, scroll: false});
@@ -1001,6 +1242,9 @@ if (els.render2dOverlay) {
 }
 els.reset.addEventListener("click", () => resetCurrentEdit({keepMode: true}));
 els.build.addEventListener("click", buildEdit);
+if (els.uploadBtn) els.uploadBtn.addEventListener("click", uploadVideoAndRunGVHMR);
+if (els.uploadStopBtn) els.uploadStopBtn.addEventListener("click", stopActiveGVHMRJob);
+if (els.stopSplineOpt) els.stopSplineOpt.addEventListener("click", stopActiveSplineOptJob);
 els.playPause.addEventListener("click", () => {
   if (els.video.paused) {
     syncDisplayVideo();

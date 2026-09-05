@@ -80,6 +80,29 @@ def _draw_polyline_bgr(
     cv2.addWeighted(overlay, float(alpha), frame, 1.0 - float(alpha), 0.0, dst=frame)
 
 
+def _draw_masked_polyline_bgr(
+    frame: np.ndarray,
+    points: np.ndarray,
+    mask: np.ndarray,
+    color: tuple[int, int, int],
+    *,
+    width: int = 3,
+    alpha: float = 0.85,
+) -> None:
+    pts = np.asarray(points, dtype=np.float32)
+    mask = np.asarray(mask, dtype=bool).reshape(-1)
+    if len(pts) != len(mask):
+        mask = np.ones((len(pts),), dtype=bool)
+    start = None
+    for i, keep in enumerate(mask.tolist() + [False]):
+        if keep and start is None:
+            start = i
+        elif (not keep) and start is not None:
+            if i - start >= 2:
+                _draw_polyline_bgr(frame, pts[start:i], color, width=width, alpha=alpha)
+            start = None
+
+
 def _draw_side_legend_panel(
     canvas: np.ndarray,
     *,
@@ -141,6 +164,7 @@ def annotate_render_with_2d_targets(
     original_joint_xy: np.ndarray,
     edited_joint_xy: np.ndarray,
     video_size: list[int] | tuple[int, int],
+    edited_joint_masks: np.ndarray | None = None,
 ) -> Path:
     """Overlay original/edited trajectories, with all legends placed in a right-side panel.
 
@@ -170,6 +194,15 @@ def annotate_render_with_2d_targets(
     n_joints = min(int(orig.shape[0]), int(edit.shape[0]))
     orig = orig[:n_joints]
     edit = edit[:n_joints]
+    if edited_joint_masks is None:
+        masks = np.ones((n_joints, int(orig.shape[1])), dtype=bool)
+    else:
+        masks = np.asarray(edited_joint_masks, dtype=bool)
+        if masks.ndim == 1:
+            masks = masks[None, ...]
+        masks = masks[:n_joints]
+        if masks.shape[1] != orig.shape[1]:
+            masks = np.ones((n_joints, int(orig.shape[1])), dtype=bool)
     orig[:, :, 0] *= sx
     orig[:, :, 1] *= sy
     edit[:, :, 0] *= sx
@@ -186,30 +219,36 @@ def annotate_render_with_2d_targets(
 
     orig_palette = [(255, 120, 30), (255, 80, 150), (180, 110, 255), (80, 180, 255), (255, 210, 90)]
     edit_palette = [(0, 220, 255), (0, 245, 120), (80, 255, 220), (70, 180, 255), (255, 255, 80)]
+    annotate_log_stride = max(1, int(n) // 20)
+    print(f"[Spline-Opt] annotate rendering frame=0/{int(n)}", flush=True)
     try:
         for i in range(n):
             ok, frame = cap.read()
             if not ok or frame is None:
                 break
+            if i == 0 or (i + 1) % annotate_log_stride == 0 or (i + 1) == n:
+                print(f"[Spline-Opt] annotate rendering frame={i + 1}/{int(n)}", flush=True)
             canvas = np.zeros((height, out_width, 3), dtype=np.uint8)
             canvas[:, :width] = frame
             for j in range(n_joints):
                 oc = orig_palette[j % len(orig_palette)]
                 ec = edit_palette[j % len(edit_palette)]
-                _draw_polyline_bgr(canvas[:, :width], orig[j, :n], oc, width=3, alpha=0.75)
-                _draw_polyline_bgr(canvas[:, :width], edit[j, :n], ec, width=4, alpha=0.86)
-                for pts, color in ((orig[j], oc), (edit[j], ec)):
-                    p0 = tuple(np.round(pts[0]).astype(int).tolist())
-                    p1 = tuple(np.round(pts[n - 1]).astype(int).tolist())
-                    cv2.circle(canvas, p0, 5, color, -1, cv2.LINE_AA)
-                    cv2.circle(canvas, p1, 5, color, -1, cv2.LINE_AA)
-                po = tuple(np.round(orig[j, i]).astype(int).tolist())
-                pe = tuple(np.round(edit[j, i]).astype(int).tolist())
-                cv2.circle(canvas, po, 6, oc, -1, cv2.LINE_AA)
-                cv2.circle(canvas, po, 9, (255, 255, 255), 1, cv2.LINE_AA)
-                cv2.circle(canvas, pe, 9, ec, -1, cv2.LINE_AA)
-                cv2.circle(canvas, pe, 13, (255, 255, 255), 2, cv2.LINE_AA)
-                cv2.line(canvas, po, pe, (255, 255, 255), 1, cv2.LINE_AA)
+                mask = masks[j, :n]
+                _draw_masked_polyline_bgr(canvas[:, :width], orig[j, :n], mask, oc, width=3, alpha=0.75)
+                _draw_masked_polyline_bgr(canvas[:, :width], edit[j, :n], mask, ec, width=4, alpha=0.86)
+                active_idx = np.flatnonzero(mask)
+                if len(active_idx) > 0:
+                    for idx_pt, pts, color in ((active_idx[0], orig[j], oc), (active_idx[-1], orig[j], oc), (active_idx[0], edit[j], ec), (active_idx[-1], edit[j], ec)):
+                        p = tuple(np.round(pts[int(idx_pt)]).astype(int).tolist())
+                        cv2.circle(canvas, p, 5, color, -1, cv2.LINE_AA)
+                if i < len(mask) and bool(mask[i]):
+                    po = tuple(np.round(orig[j, i]).astype(int).tolist())
+                    pe = tuple(np.round(edit[j, i]).astype(int).tolist())
+                    cv2.circle(canvas, po, 6, oc, -1, cv2.LINE_AA)
+                    cv2.circle(canvas, po, 9, (255, 255, 255), 1, cv2.LINE_AA)
+                    cv2.circle(canvas, pe, 9, ec, -1, cv2.LINE_AA)
+                    cv2.circle(canvas, pe, 13, (255, 255, 255), 2, cv2.LINE_AA)
+                    cv2.line(canvas, po, pe, (255, 255, 255), 1, cv2.LINE_AA)
             _draw_side_legend_panel(canvas, x0=width, y0=18, panel_w=panel_w, n_joints=n_joints)
             writer.write(canvas)
     finally:
@@ -414,6 +453,7 @@ def run_spline_opt_for_edit(
             render_paths = {k: str(v) for k, v in paths.items()}
             orig_traj_path = req["paths"].get("original_joint_trajectories") or req["paths"]["original_joint_trajectory"]
             edit_traj_path = req["paths"].get("sampled_target_trajectories") or req["paths"]["sampled_target_trajectory"]
+            mask_path = req["paths"].get("edited_joint_masks")
             annotated_path = annotate_render_with_2d_targets(
                 input_video_path=video_path,
                 render_video_path=paths["overlay_compare_video"],
@@ -421,6 +461,7 @@ def run_spline_opt_for_edit(
                 original_joint_xy=np.load(orig_traj_path),
                 edited_joint_xy=np.load(edit_traj_path),
                 video_size=req.get("video_size", [1, 1]),
+                edited_joint_masks=(np.load(mask_path) if mask_path else None),
             )
             paths["annotated_overlay_compare_video"] = annotated_path
             render_paths = {k: str(v) for k, v in paths.items()}

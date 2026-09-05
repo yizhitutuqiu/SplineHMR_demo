@@ -4,7 +4,7 @@ This is an internal MVP for the SplineHMR oral-presentation demo.
 
 The demo lets a user:
 
-1. load a sequence from the sibling `../SplineHMR/inputs` directory;
+1. load a sequence from the sibling `../SplineHMR/inputs` directory, or upload a new video and initialize it with GVHMR;
 2. select COCO17 joints from a clickable right-side T-pose picker;
 3. view the original SMPL/SMPL-X reprojection trajectory of the active joint, colored by speed from slow to fast;
 4. edit one or more joints with browser strokes or sparse keyframes while preserving the video's original aspect ratio;
@@ -55,12 +55,43 @@ conda run -n splinehmr python app.py --host 0.0.0.0 --port 7860
 For development, SSH tunneling is safer.
 
 
+## Uploading a new video with GVHMR
+
+The upload panel starts a separate GVHMR initialization workflow:
+
+1. the browser uploads the selected video to `outputs/gvhmr_uploads/<job_id>/upload/`;
+2. the backend runs:
+
+```bash
+conda run --no-capture-output -n gvhmr python tools/demo/demo.py \
+  --video <uploaded_video.mp4> \
+  --output_root outputs/gvhmr_uploads/<job_id>/gvhmr_outputs
+```
+
+with working directory `../third_party/GVHMR`;
+3. progress is shown live in the UI using GVHMR log keywords such as preprocess, HMR4D inference, render, and merge;
+4. on success, the generated GVHMR package is copied into the normal SplineHMR layout:
+
+```text
+../SplineHMR/inputs/<upload_sequence>/
+  0_input_video.mp4
+  hmr4d_results.pt
+  preprocess/bbx.pt
+  preprocess/vitpose.pt
+
+../SplineHMR/outputs/<upload_sequence>/spline-opt/render_before.mp4
+```
+
+The frontend then automatically selects the new sequence. From that point onward, trajectory editing, 2D preview, Spline-Opt, rendering, and download buttons are exactly the same as for the bundled examples.
+
+Requirements: `../third_party/GVHMR` must be present and runnable in the `gvhmr` conda environment, including its model/body assets.
+
 ## UI notes
 
 - The main viewer has two synchronized windows: the left window is a non-interactive source-body preview. It uses `../SplineHMR/outputs/<seq>/spline-opt/render_before.mp4` when available and falls back to the input video with SMPL/SMPL-X reprojection skeleton. The right window is the editable target canvas.
 - Both windows preserve the original video aspect ratio exactly. Portrait sequences stay portrait and are centered instead of being stretched or cropped.
 - The right-side COCO17 T-pose is the primary joint selector. Clicking a joint updates the active joint without deleting edits already made on other joints.
-- The selected joint trajectory is drawn over the whole selected frame range. Segment color indicates speed: blue is slow, red is fast. Joints that already have edits stay marked in the T-pose and remain visible on the editable canvas.
+- The selected joint trajectory is drawn over the whole selected frame range. Segment color indicates speed: blue is slow, red is fast. Joints that already have edits stay marked in the T-pose, but the editable canvas only visualizes the currently selected joint to keep the drawing area clean.
 - After clicking Build, an Edited 2D Keypoints Preview panel appears. This preview is generated from the saved `keypoints_2d_edit.pt`, i.e. the exact tensor sent to Spline-Opt.
 - The debug report is collapsed by default to keep the live demo compact; expand it only when inspecting request IDs or optimizer stats.
 - Download buttons are shown for generated videos, including the edited-2D preview and rendered before/after/compare/annotated outputs.
@@ -76,7 +107,7 @@ Draw a complete desired path directly on the video. The backend samples one targ
 
 ### Keyframe mode
 
-Enable the Keyframes switch, scrub the video to a frame, and click the editable right-hand video window to set the selected joint target at that frame. Clicking the same frame again replaces the keyframe. The keyframe list is collapsed by default to keep the UI compact. The selected frame range must include keyframes at both its first and last frame for every keyframe-edited joint; otherwise Build is rejected.
+Enable the Keyframes switch, scrub the video to a frame, and click the editable right-hand video window to set the selected joint target at that frame. Clicking the same frame again replaces the keyframe. The keyframe list is collapsed by default to keep the UI compact. At least two keyframes are required, but they do not need to include the selected frame range boundary. If the first/last keyframe lies inside the selected range, only that partial interval is strongly edited; frames outside the keyframe interval keep the original 2D reprojection with weak anchor confidence.
 
 Available geometric interpolation modes are:
 
@@ -122,6 +153,22 @@ It preserves absolute 2D speed only when the drawn curve length matches the orig
 ### Uniform
 
 Uniformly samples the drawn curve by frame index. This is mostly a debugging baseline.
+
+## Stopping long-running jobs and live progress
+
+Both long-running backends are controlled as cancelable jobs.
+
+- GVHMR upload initialization runs in a subprocess under the `gvhmr` conda environment. The UI shows coarse stages from the live GVHMR log and provides `Stop GVHMR`, which terminates the whole process group.
+- Spline-Opt runs in a separate `splinehmr` Python subprocess instead of blocking the HTTP request. The UI shows live optimizer closure progress, loss values, render frame progress, and annotated-render frame progress. `Stop Spline-Opt` terminates the whole process group and returns the UI to an editable state.
+
+The progress logs are written under:
+
+```text
+outputs/gvhmr_uploads/<job_id>/gvhmr.log
+outputs/spline_opt_jobs/<job_id>/spline_opt.log
+```
+
+PyTorch LBFGS may evaluate the closure more times than the nominal `max_iter` because of line search. The UI therefore treats `optimizer closure=i/max_iter` as a real optimizer activity indicator rather than a mathematically exact percentage of all internal function evaluations.
 
 ## Optional B-spline optimization parameters
 
@@ -199,8 +246,13 @@ When `Render result after optimization` is enabled, the frontend displays `rende
 ```text
 GET  /api/sequences
 GET  /api/sequence/<name>/meta
+POST /api/upload_video
+GET  /api/gvhmr_job/<job_id>
+POST /api/gvhmr_job/<job_id>/stop
 POST /api/edit
 POST /api/run_spline_opt
+GET  /api/spline_opt_job/<job_id>
+POST /api/spline_opt_job/<job_id>/stop
 ```
 
 `/api/sequence/<name>/meta` computes and caches original COCO17 reprojection from the existing SMPL/SMPL-X sequence. If body-model reprojection fails, it falls back to `preprocess/vitpose.pt` and returns a warning.

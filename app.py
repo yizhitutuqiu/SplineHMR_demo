@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import cgi
 import json
 import mimetypes
 import os
@@ -13,9 +14,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from splinehmr_demo.edit import create_edit
+from splinehmr_demo.gvhmr_bridge import create_upload_job, get_job, stop_job as stop_gvhmr_job
 from splinehmr_demo.paths import DEMO_ROOT, OUTPUTS_ROOT
 from splinehmr_demo.sequence import input_video_path, list_sequences, sequence_meta, source_render_path
-from splinehmr_demo.spline_opt_bridge import run_spline_opt_for_edit
+from splinehmr_demo.spline_opt_jobs import get_spline_opt_job, start_spline_opt_job, stop_spline_opt_job
 
 
 STATIC_ROOT = DEMO_ROOT / "static"
@@ -72,6 +74,28 @@ class DemoHandler(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(n) if n > 0 else b"{}"
         return json.loads(raw.decode("utf-8"))
+
+    def _read_uploaded_video(self) -> tuple[str, bytes]:
+        content_type = self.headers.get("Content-Type", "")
+        ctype, _ = cgi.parse_header(content_type)
+        if ctype != "multipart/form-data":
+            raise ValueError("Expected multipart/form-data with a 'video' file field.")
+        form = cgi.FieldStorage(
+            fp=self.rfile,
+            headers=self.headers,
+            environ={
+                "REQUEST_METHOD": "POST",
+                "CONTENT_TYPE": content_type,
+                "CONTENT_LENGTH": self.headers.get("Content-Length", "0"),
+            },
+        )
+        field = form["video"] if "video" in form else None
+        if isinstance(field, list):
+            field = field[0] if field else None
+        if field is None or not getattr(field, "filename", None):
+            raise ValueError("No uploaded file found. Use field name 'video'.")
+        data = field.file.read()
+        return Path(field.filename).name, data
 
     def _send_file(self, path: Path, *, content_type: str | None = None, head_only: bool = False) -> None:
         path = path.resolve()
@@ -157,6 +181,18 @@ class DemoHandler(BaseHTTPRequestHandler):
                 return self._send_file(STATIC_ROOT / rel)
             if path == "/api/sequences":
                 return self._send_json({"status": "ok", "sequences": list_sequences()})
+            if path.startswith("/api/gvhmr_job/"):
+                job_id = path.split("/")[-1]
+                job = get_job(job_id)
+                if job is None:
+                    return self._send_error_json(404, f"Unknown GVHMR job: {job_id}")
+                return self._send_json({"status": "ok", "job": job.to_dict(include_log=True)})
+            if path.startswith("/api/spline_opt_job/"):
+                job_id = path.split("/")[-1]
+                job = get_spline_opt_job(job_id)
+                if job is None:
+                    return self._send_error_json(404, f"Unknown Spline-Opt job: {job_id}")
+                return self._send_json({"status": "ok", "job": job.to_dict(include_log=True)})
             if path.startswith("/api/sequence/") and path.endswith("/meta"):
                 seq = path.split("/")[3]
                 device = query.get("device", ["cuda"])[0]
@@ -184,9 +220,17 @@ class DemoHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
-        request_id = make_request_id("edit" if parsed.path == "/api/edit" else "run" if parsed.path == "/api/run_spline_opt" else "req")
+        request_id = make_request_id("edit" if parsed.path == "/api/edit" else "run" if parsed.path == "/api/run_spline_opt" else "upload" if parsed.path == "/api/upload_video" else "req")
         payload: dict = {}
         try:
+            if parsed.path == "/api/upload_video":
+                filename, video_bytes = self._read_uploaded_video()
+                payload = {"request_id": request_id, "filename": filename, "num_bytes": len(video_bytes)}
+                job = create_upload_job(filename, video_bytes)
+                response = {"status": "ok", "request_id": request_id, "job": job.to_dict(include_log=True)}
+                write_request_log(request_id, payload, response=response)
+                return self._send_json(response)
+
             payload = self._read_json_body()
             payload.setdefault("request_id", request_id)
             if parsed.path == "/api/edit":
@@ -195,17 +239,29 @@ class DemoHandler(BaseHTTPRequestHandler):
                 write_request_log(request_id, payload, response=response)
                 return self._send_json(response)
             if parsed.path == "/api/run_spline_opt":
-                result = run_spline_opt_for_edit(
-                    edit_request_path=payload["edit_request_path"],
-                    device=str(payload.get("device", "cuda")),
-                    max_iter=(None if payload.get("max_iter", None) in (None, "", "default") else int(payload.get("max_iter"))),
-                    render=bool(payload.get("render", False)),
-                    crf=int(payload.get("crf", 23)),
-                    bspline_overrides=payload.get("bspline_overrides", None),
-                    request_id=request_id,
-                )
-                response = {"status": "ok", "request_id": request_id, "result": result}
+                job = start_spline_opt_job(payload, request_id=request_id)
+                response = {"status": "ok", "request_id": request_id, "job": job.to_dict(include_log=True)}
                 write_request_log(request_id, payload, response=response)
+                return self._send_json(response)
+            if parsed.path.startswith("/api/gvhmr_job/") and parsed.path.endswith("/stop"):
+                parts = parsed.path.split("/")
+                job_id = parts[-2] if len(parts) >= 4 else ""
+                ok = stop_gvhmr_job(job_id)
+                if not ok:
+                    return self._send_error_json(404, f"Unknown GVHMR job: {job_id}", request_id=request_id)
+                job = get_job(job_id)
+                response = {"status": "ok", "request_id": request_id, "job": job.to_dict(include_log=True) if job else None}
+                write_request_log(request_id, {"job_id": job_id}, response=response)
+                return self._send_json(response)
+            if parsed.path.startswith("/api/spline_opt_job/") and parsed.path.endswith("/stop"):
+                parts = parsed.path.split("/")
+                job_id = parts[-2] if len(parts) >= 4 else ""
+                ok = stop_spline_opt_job(job_id)
+                if not ok:
+                    return self._send_error_json(404, f"Unknown Spline-Opt job: {job_id}", request_id=request_id)
+                job = get_spline_opt_job(job_id)
+                response = {"status": "ok", "request_id": request_id, "job": job.to_dict(include_log=True) if job else None}
+                write_request_log(request_id, {"job_id": job_id}, response=response)
                 return self._send_json(response)
             self.send_error(HTTPStatus.NOT_FOUND)
         except Exception as exc:

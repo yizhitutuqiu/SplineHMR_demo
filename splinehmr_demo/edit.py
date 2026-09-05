@@ -13,7 +13,9 @@ import torch
 from .paths import OUTPUTS_ROOT
 from .sequence import COCO17_EDGES, JOINT_NAME_TO_INDEX, get_original_coco17, input_video_path, read_video_meta
 from .trajectory import (
+    SampledTrajectory,
     TimingMode,
+    TimingReport,
     normalized_to_pixels,
     pixels_to_normalized,
     preprocess_stroke,
@@ -85,6 +87,7 @@ def build_multi_edited_keypoints(
     *,
     original_coco17: torch.Tensor,
     joint_targets: dict[int, np.ndarray],
+    joint_masks: dict[int, np.ndarray] | None = None,
     base_conf: float,
     edit_conf: float,
     neighbor_conf: float,
@@ -98,6 +101,8 @@ def build_multi_edited_keypoints(
         raise ValueError(f"Expected COCO17 with 17 joints, got {J}")
     if not joint_targets:
         raise ValueError("At least one edited joint target is required")
+    if joint_masks is None:
+        joint_masks = {}
 
     edited_indices = {int(j) for j in joint_targets.keys()}
     out = torch.zeros((T, J, 3), dtype=torch.float32)
@@ -111,19 +116,27 @@ def build_multi_edited_keypoints(
         out[:, :, :2] = out[:, :, :2] + noise
 
     out[:, :, 2] = float(base_conf)
+    mask_tensors: dict[int, torch.Tensor] = {}
     for selected_joint, target_2d in joint_targets.items():
         j = int(selected_joint)
         target = np.asarray(target_2d, dtype=np.float32)
         if target.shape != (T, 2):
             raise ValueError(f"target_2d for joint {j} must be {(T, 2)}, got {target.shape}")
+        mask_np = np.asarray(joint_masks.get(j, np.ones((T,), dtype=bool)), dtype=bool).reshape(-1)
+        if mask_np.shape != (T,):
+            raise ValueError(f"edit mask for joint {j} must be {(T,)}, got {mask_np.shape}")
+        mask_t = torch.from_numpy(mask_np).bool()
+        mask_tensors[j] = mask_t
         out[:, j, :2] = torch.from_numpy(target).float()
-        out[:, j, 2] = float(edit_conf)
+        out[mask_t, j, 2] = float(edit_conf)
 
     for selected_joint in edited_indices:
+        mask_t = mask_tensors[int(selected_joint)]
         for j in KINEMATIC_NEIGHBORS.get(int(selected_joint), []):
-            out[:, j, 2] = max(float(out[:, j, 2].max().item()), float(neighbor_conf))
+            out[mask_t, j, 2] = torch.clamp(out[mask_t, j, 2], min=float(neighbor_conf))
     for selected_joint in edited_indices:
-        out[:, int(selected_joint), 2] = float(edit_conf)
+        mask_t = mask_tensors[int(selected_joint)]
+        out[mask_t, int(selected_joint), 2] = float(edit_conf)
     return out
 
 
@@ -142,6 +155,7 @@ def build_edited_keypoints(
     return build_multi_edited_keypoints(
         original_coco17=original_coco17,
         joint_targets={int(selected_joint): target_2d},
+        joint_masks={int(selected_joint): np.ones((int(original_coco17.shape[0]),), dtype=bool)},
         base_conf=base_conf,
         edit_conf=edit_conf,
         neighbor_conf=neighbor_conf,
@@ -161,6 +175,21 @@ def _draw_translucent_polyline(frame: np.ndarray, points: np.ndarray, color: tup
     cv2.addWeighted(overlay, float(alpha), frame, 1.0 - float(alpha), 0.0, dst=frame)
 
 
+def _draw_masked_translucent_polyline(frame: np.ndarray, points: np.ndarray, mask: np.ndarray, color: tuple[int, int, int], alpha: float, width: int) -> None:
+    pts = np.asarray(points, dtype=np.float32)
+    mask = np.asarray(mask, dtype=bool).reshape(-1)
+    if len(pts) != len(mask):
+        mask = np.ones((len(pts),), dtype=bool)
+    start = None
+    for i, keep in enumerate(mask.tolist() + [False]):
+        if keep and start is None:
+            start = i
+        elif (not keep) and start is not None:
+            if i - start >= 2:
+                _draw_translucent_polyline(frame, pts[start:i], color, alpha, width)
+            start = None
+
+
 def render_keypoints_preview_video(
     *,
     video_path: Path,
@@ -169,6 +198,7 @@ def render_keypoints_preview_video(
     target_trajectory: np.ndarray | None = None,
     selected_joints: list[int] | None = None,
     target_trajectories: dict[int, np.ndarray] | None = None,
+    target_masks: dict[int, np.ndarray] | None = None,
     output_path: Path,
     frame_start: int = 0,
     fps: float | None = None,
@@ -178,8 +208,12 @@ def render_keypoints_preview_video(
     T = int(kps.shape[0])
     if target_trajectories is None:
         target_trajectories = {}
+    if target_masks is None:
+        target_masks = {}
     if selected_joint is not None and target_trajectory is not None:
-        target_trajectories[int(selected_joint)] = np.asarray(target_trajectory, dtype=np.float32)
+        sj = int(selected_joint)
+        target_trajectories[sj] = np.asarray(target_trajectory, dtype=np.float32)
+        target_masks.setdefault(sj, np.ones((T,), dtype=bool))
     if selected_joints is None:
         selected_joints = sorted(int(j) for j in target_trajectories.keys())
     selected_set = {int(j) for j in selected_joints}
@@ -209,8 +243,12 @@ def render_keypoints_preview_video(
         pts = kps[i, :, :2]
         conf = kps[i, :, 2]
 
+        active_selected_set = set()
         for n, j in enumerate(sorted(target_trajectories.keys())):
-            _draw_translucent_polyline(frame, target_trajectories[j], palette[n % len(palette)], alpha=0.58, width=4)
+            mask = np.asarray(target_masks.get(int(j), np.ones((T,), dtype=bool)), dtype=bool).reshape(-1)
+            _draw_masked_translucent_polyline(frame, target_trajectories[j], mask, palette[n % len(palette)], alpha=0.58, width=4)
+            if i < len(mask) and bool(mask[i]):
+                active_selected_set.add(int(j))
 
         for a, b in COCO17_EDGES:
             if conf[a] <= 0.05 or conf[b] <= 0.05:
@@ -223,7 +261,7 @@ def render_keypoints_preview_video(
             if conf[j] <= 0.05:
                 continue
             p = tuple(np.round(pxy).astype(int).tolist())
-            if j in selected_set:
+            if j in active_selected_set:
                 cv2.circle(frame, p, 8, (0, 220, 80), -1, cv2.LINE_AA)
                 cv2.circle(frame, p, 11, (255, 255, 255), 2, cv2.LINE_AA)
             else:
@@ -292,6 +330,7 @@ def _sample_one_edit(
     selected_joint, joint_name = _resolve_joint(spec["joint"])
     selected_orig = original[:, selected_joint, :2].numpy()
     edit_mode = str(spec["edit_mode"]).strip().lower()
+    edit_mask = np.ones((int(selected_orig.shape[0]),), dtype=bool)
     stroke_px: np.ndarray | None = None
     keyframes_abs_px: np.ndarray | None = None
     keyframes_norm_out: np.ndarray | None = None
@@ -300,7 +339,7 @@ def _sample_one_edit(
     if edit_mode == "keyframe":
         keyframes_in = spec.get("keyframes", None)
         if not isinstance(keyframes_in, list) or len(keyframes_in) < 2:
-            raise ValueError(f"{joint_name}: keyframe mode requires at least first and last keyframes")
+            raise ValueError(f"{joint_name}: keyframe mode requires at least two keyframes")
         rows: list[tuple[int, float, float]] = []
         for item in keyframes_in:
             if not isinstance(item, dict):
@@ -315,18 +354,51 @@ def _sample_one_edit(
             dedup[int(f_abs)] = (float(x), float(y))
         frames_abs = np.asarray(sorted(dedup.keys()), dtype=np.int64)
         pts_norm = np.asarray([dedup[int(f)] for f in frames_abs], dtype=np.float64)
+        if len(frames_abs) < 2:
+            raise ValueError(f"{joint_name}: keyframe mode requires at least two unique keyframes")
         if int(frames_abs[0]) < frame_start_abs or int(frames_abs[-1]) > frame_end_abs_inclusive:
             raise ValueError(f"{joint_name}: keyframes must lie inside selected frame range [{frame_start_abs}, {frame_end_abs_inclusive}]")
-        if frame_start_abs not in set(frames_abs.tolist()) or frame_end_abs_inclusive not in set(frames_abs.tolist()):
-            raise ValueError(f"{joint_name}: keyframe mode requires keyframes at frame {frame_start_abs} and frame {frame_end_abs_inclusive}")
         pts_px = normalized_to_pixels(pts_norm, video_size)
-        frames_rel = frames_abs - frame_start_abs
-        sampled = sample_keyframes_with_original_speed(
+        key_start_abs = int(frames_abs[0])
+        key_end_abs = int(frames_abs[-1])
+        key_start_rel = key_start_abs - frame_start_abs
+        key_end_rel = key_end_abs - frame_start_abs
+        frames_rel = frames_abs - key_start_abs
+        local_orig = selected_orig[key_start_rel : key_end_rel + 1]
+        local_sampled = sample_keyframes_with_original_speed(
             keyframe_frames=frames_rel.tolist(),
             keyframe_xy=pts_px,
-            original_joint_xy=selected_orig,
+            original_joint_xy=local_orig,
             interpolation=spec["interpolation_mode"],  # type: ignore[arg-type]
         )
+        target_full = selected_orig.copy()
+        target_full[key_start_rel : key_end_rel + 1] = local_sampled.target_2d
+        s_t_full = np.zeros((int(selected_orig.shape[0]),), dtype=np.float32)
+        s_t_full[key_start_rel : key_end_rel + 1] = local_sampled.s_t
+        target_speed_full = np.linalg.norm(target_full[1:] - target_full[:-1], axis=-1).astype(np.float32)
+        original_speed_full = np.linalg.norm(selected_orig[1:] - selected_orig[:-1], axis=-1).astype(np.float32)
+        local_report = local_sampled.report.to_dict()
+        note = local_report.get("note", "")
+        if key_start_abs != frame_start_abs or key_end_abs != frame_end_abs_inclusive:
+            note += f" Partial keyframe edit is active only on absolute frames [{key_start_abs}, {key_end_abs}]; outside this interval, this joint keeps the original 2D reprojection with weak confidence."
+        sampled = SampledTrajectory(
+            target_2d=target_full.astype(np.float32),
+            s_t=s_t_full.astype(np.float32),
+            target_speed_px=target_speed_full,
+            original_speed_px=original_speed_full,
+            report=TimingReport(
+                mode=(local_sampled.report.mode if (key_start_abs == frame_start_abs and key_end_abs == frame_end_abs_inclusive) else local_sampled.report.mode + "_partial"),
+                num_frames=int(selected_orig.shape[0]),
+                original_total_length_px=float(local_report.get("original_total_length_px", 0.0)),
+                user_curve_length_px=float(local_report.get("user_curve_length_px", 0.0)),
+                speed_scale=float(local_report.get("speed_scale", float("nan"))),
+                absolute_speed_exact=bool(local_report.get("absolute_speed_exact", False)),
+                reaches_curve_end=bool(local_report.get("reaches_curve_end", True)),
+                note=note,
+            ),
+        )
+        edit_mask = np.zeros((int(selected_orig.shape[0]),), dtype=bool)
+        edit_mask[key_start_rel : key_end_rel + 1] = True
         keyframes_abs_px = np.concatenate([frames_abs[:, None].astype(np.float64), pts_px], axis=1)
         keyframes_norm_out = np.concatenate([frames_abs[:, None].astype(np.float64), pts_norm], axis=1)
         keyframe_payload_out = [
@@ -362,6 +434,9 @@ def _sample_one_edit(
         "sampled_target_trajectory_px": sampled.target_2d.astype(float).tolist(),
         "sampled_target_trajectory_norm": pixels_to_normalized(sampled.target_2d, video_size).astype(float).tolist(),
         "timing_report": sampled.report.to_dict(),
+        "active_frame_start": int(np.flatnonzero(edit_mask)[0]) + frame_start_abs if np.any(edit_mask) else frame_start_abs,
+        "active_frame_end": int(np.flatnonzero(edit_mask)[-1]) + frame_start_abs + 1 if np.any(edit_mask) else frame_start_abs,
+        "edit_mask": edit_mask.astype(bool),
         "stroke_px": stroke_px,
         "keyframes_px": keyframes_abs_px,
         "keyframes_norm": keyframes_norm_out,
@@ -425,9 +500,11 @@ def create_edit(
         for spec in edit_specs
     ]
     joint_targets = {int(item["joint_index"]): item["sampled"].target_2d for item in processed}
+    joint_masks = {int(item["joint_index"]): item["edit_mask"] for item in processed}
     edited = build_multi_edited_keypoints(
         original_coco17=original,
         joint_targets=joint_targets,
+        joint_masks=joint_masks,
         base_conf=cfg.base_conf,
         edit_conf=cfg.edit_conf,
         neighbor_conf=cfg.neighbor_conf,
@@ -446,9 +523,11 @@ def create_edit(
     target_traj_stack = np.stack([item["sampled"].target_2d.astype(np.float32) for item in processed], axis=0)
     joint_indices = np.asarray([int(item["joint_index"]) for item in processed], dtype=np.int64)
     joint_names = [str(item["joint"]) for item in processed]
+    edit_mask_stack = np.stack([item["edit_mask"].astype(np.bool_) for item in processed], axis=0)
 
     np.save(out_dir / "original_joint_trajectories.npy", orig_traj_stack)
     np.save(out_dir / "sampled_target_trajectories.npy", target_traj_stack)
+    np.save(out_dir / "edited_joint_masks.npy", edit_mask_stack)
     np.save(out_dir / "edited_joint_indices.npy", joint_indices)
     np.save(out_dir / "original_joint_trajectory.npy", orig_traj_stack[0])
     np.save(out_dir / "sampled_target_trajectory.npy", target_traj_stack[0])
@@ -463,19 +542,25 @@ def create_edit(
             np.save(out_dir / f"{safe_joint}_keyframes_px.npy", item["keyframes_px"].astype(np.float32))
         if item["keyframes_norm"] is not None:
             np.save(out_dir / f"{safe_joint}_keyframes_norm.npy", item["keyframes_norm"].astype(np.float32))
+        np.save(out_dir / f"{safe_joint}_edit_mask.npy", item["edit_mask"].astype(np.bool_))
 
     torch.save(edited, out_dir / "keypoints_2d_edit.pt")
     torch.save(original, out_dir / "keypoints_2d_original.pt")
-    preview_path = render_keypoints_preview_video(
-        video_path=input_video_path(cfg.sequence),
-        keypoints_2d=edited,
-        selected_joints=[int(x) for x in joint_indices.tolist()],
-        target_trajectories={int(item["joint_index"]): item["sampled"].target_2d for item in processed},
-        output_path=out_dir / "keypoints_2d_preview.mp4",
-        frame_start=frame_start_abs,
-        fps=float(video_meta.fps),
-    )
-    preview_url = f"/outputs/trajectory_edit/{edit_id}/keypoints_2d_preview.mp4"
+    generate_preview = bool(payload.get("generate_preview", payload.get("preview_2d", True)))
+    preview_path: Path | None = None
+    preview_url: str | None = None
+    if generate_preview:
+        preview_path = render_keypoints_preview_video(
+            video_path=input_video_path(cfg.sequence),
+            keypoints_2d=edited,
+            selected_joints=[int(x) for x in joint_indices.tolist()],
+            target_trajectories={int(item["joint_index"]): item["sampled"].target_2d for item in processed},
+            target_masks={int(item["joint_index"]): item["edit_mask"] for item in processed},
+            output_path=out_dir / "keypoints_2d_preview.mp4",
+            frame_start=frame_start_abs,
+            fps=float(video_meta.fps),
+        )
+        preview_url = f"/outputs/trajectory_edit/{edit_id}/keypoints_2d_preview.mp4"
 
     joint_edit_reports: list[dict[str, Any]] = []
     for n, item in enumerate(processed):
@@ -495,6 +580,9 @@ def create_edit(
                 "interpolation_mode": item["interpolation_mode"],
                 "keyframes": item["keyframes"],
                 "timing_report": item["timing_report"],
+                "active_frame_start": int(item["active_frame_start"]),
+                "active_frame_end": int(item["active_frame_end"]),
+                "edit_mask": item["edit_mask"].astype(bool).tolist(),
                 "sampled_target_trajectory_px": item["sampled_target_trajectory_px"],
                 "sampled_target_trajectory_norm": item["sampled_target_trajectory_norm"],
                 "original_joint_trajectory_px": item["original_joint_trajectory_px"],
@@ -523,6 +611,7 @@ def create_edit(
         "trajectory_source_requested": cfg.trajectory_source,
         "trajectory_source_used": actual_source,
         "source_warning": source_warning,
+        "generate_preview": bool(generate_preview),
         "timing_report": processed[0]["timing_report"],
         "timing_reports": {str(item["joint"]): item["timing_report"] for item in processed},
         "sampled_target_trajectory_px": joint_edit_reports[0]["sampled_target_trajectory_px"],
@@ -535,6 +624,7 @@ def create_edit(
             "keypoints_2d_original": str(out_dir / "keypoints_2d_original.pt"),
             "sampled_target_trajectory": str(out_dir / "sampled_target_trajectory.npy"),
             "sampled_target_trajectories": str(out_dir / "sampled_target_trajectories.npy"),
+            "edited_joint_masks": str(out_dir / "edited_joint_masks.npy"),
             "original_joint_trajectory": str(out_dir / "original_joint_trajectory.npy"),
             "original_joint_trajectories": str(out_dir / "original_joint_trajectories.npy"),
             "edited_joint_indices": str(out_dir / "edited_joint_indices.npy"),
@@ -543,7 +633,7 @@ def create_edit(
             "keyframes_px": joint_edit_reports[0]["paths"]["keyframes_px"],
             "keyframes_norm": joint_edit_reports[0]["paths"]["keyframes_norm"],
             "timing_s_t": str(out_dir / "timing_s_t.npy"),
-            "keypoints_2d_preview": str(preview_path),
+            "keypoints_2d_preview": (str(preview_path) if preview_path is not None else None),
         },
         "urls": {
             "keypoints_2d_preview": preview_url,
